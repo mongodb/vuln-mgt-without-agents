@@ -150,7 +150,9 @@ I've done a fair amount of testing by having a list of known application names a
 
 False positives are somewhat high though because if a CVE summary says something like "application XYZ version 1.2.3 on Windows is vulnerable", my script does not pick up that it only affects Windows machines. Additionally, my [regexes](https://en.wikipedia.org/wiki/Regular_expression) may erroneously pick up certain phrases in the CVE summary as a version.
 
-In my cursory analysis, I would say this method has a 75% true positive rate, 20% false positive rate, 90% true negative rate, and 10% false negative rate but I have no evidence to back up these numbers. I encourage you to do your own analysis to see if this method works for you by running some tests yourself.
+In my cursory analysis, I would say this method has a 75% true positive rate, 40% false positive rate, 90% true negative rate, and 10% false negative rate but I have no evidence to back up these numbers. I encourage you to do your own analysis to see if this method works for you by running some tests yourself.
+
+You will need to critically think in order to figure out what is a true or false positive.
 
 ## How It Works
 
