@@ -108,7 +108,7 @@ def find_all_cves(conn, application, versions, debug=False):
                 api_key = env["AZURE_OPENAI_API_KEY"],
                 api_version = "2023-05-15",
                 azure_deployment = "Inference",
-                azure_endpoint = "http://localhost:8000/api-chat-3/azure"
+                azure_endpoint = env["AZURE_OPENAI_URL"]
                 )
 
         prompt = """Given application '""" + application + """' that is version '""" + version + """' and the JSON blob below containing a list of CVE IDs and descriptions, give me a list of CVE IDs that affect this application and version. Give the answer only in a Python list format without anything else. If there are no valid CVEs or if based on the information given the answer is still unknown, simply respond with an empty Python list.\n\n-----\n\n""" + json.dumps(found_cves)

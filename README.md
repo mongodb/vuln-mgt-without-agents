@@ -23,6 +23,10 @@ You will then need to set up 2 environment variables:
 
 1. `MDB_NVD_HOST` - A [MongoDB URI](https://www.mongodb.com/docs/manual/reference/connection-string/). If you use MongoDB Atlas, this will look like `mongodb+srv://$USERNAME:<password>@mymongodbinstance.random123.mongodb.net` (leave `<password>` like that)
 2. `MDB_NVD_PASS` - The password for the user that has access to `MDB_NVD_HOST`
+3. `AZURE_OPENAI_URI` - The Azure OpenAI endpoint you are using
+4. `AZURE_OPENAI_API_KEY` - The Azure OpenAI API key
+
+(If you don't want to use Azure OpenAI, you can modify the code within the `ask_gai()` function in `application-scan-without-agent.py` script)
 
 To set up environment variables on Linux/MacOS system, do this in a terminal:
 
