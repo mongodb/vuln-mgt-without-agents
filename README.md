@@ -160,4 +160,8 @@ You will need to critically think in order to figure out what is a true or false
 
 ## How It Works
 
-Lots of [regex](https://en.wikipedia.org/wiki/Regular_expression)
+Lots of [regex](https://en.wikipedia.org/wiki/Regular_expression) and generative AI to help
+
+### TODO
+
+* Ensure that the GAI part checks token counts
