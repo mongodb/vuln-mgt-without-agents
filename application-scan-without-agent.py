@@ -6,6 +6,8 @@ import argparse
 from os import environ as env
 import json
 import re
+import openai
+from ast import literal_eval
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -23,8 +25,8 @@ def connect_mdb():
     connection_str = env["MDB_NVD_HOST"].strip()
     db = "nvd_mirror"
     pw = env["MDB_NVD_PASS"].strip()
-    connection_str = connection_str.replace("<password>", pw)
-    connection_str = connection_str.replace("<dbname>", db)
+    user = env["MDB_NVD_USER"].strip()
+    connection_str = f"mongodb+srv://{user}:{pw}@{connection_str}"
     try:
         conn = pymongo.MongoClient(connection_str)
         logger.debug("Connected to MongoDB Atlas")
@@ -56,7 +58,6 @@ def greater_version(source, target):
             return target
     # Default
     return source
-
 
 
 # Finds all CVEs that reference this CPE
@@ -91,15 +92,41 @@ def find_all_cves(conn, application, versions, debug=False):
 
     logger.debug(f"Application to look up: {application}")
     logger.debug(f"Query: {json.dumps(query)}")
-    def is_app_in_cpe_uri(normalized_app, uri):
+
+    def is_app_in_cpe_uri(uri):
+        normalized_app = application.lower()
         pattern = r'\W+'
         split_app = re.split(pattern, normalized_app)
-
         application_part_of_uri = ':'.join(uri.split(':')[3:5])
         for x in split_app:
             if x not in application_part_of_uri:
                 return False
         return True
+
+    def ask_gai(application, version, found_cves):
+        client = openai.AzureOpenAI(
+                api_key = env["AZURE_OPENAI_API_KEY"],
+                api_version = "2023-05-15",
+                azure_deployment = "Inference",
+                azure_endpoint = "http://localhost:8000/api-chat-3/azure"
+                )
+
+        prompt = """Given application '""" + application + """' that is version '""" + version + """' and the JSON blob below containing a list of CVE IDs and descriptions, give me a list of CVE IDs that affect this application and version. Give the answer only in a Python list format without anything else. If there are no valid CVEs or if based on the information given the answer is still unknown, simply respond with an empty Python list.\n\n-----\n\n""" + json.dumps(found_cves)
+        logger.debug(f"GAI prompt: {prompt}")
+
+        completion = client.chat.completions.create(
+          model="gpt-3.5-turbo",
+          n=1,
+          temperature=0,
+          messages=[
+            {"role": "system", "content": "You are a simple bot that evaluates whether or not an application is affected by vulnerabilities based on the JSON descriptions below. You only respond in a way where Python can ingest the response (like a Python list)."},
+            {"role": "user", "content": prompt}
+          ]
+        )
+
+        gai_answer = completion.choices[0].message.content
+        logger.debug(f"GAI answer: {gai_answer}")
+        return gai_answer
 
     def is_valid_cve(application, version, cve_id, description, cpe_match):
         logger.debug("-----")
@@ -113,7 +140,7 @@ def find_all_cves(conn, application, versions, debug=False):
         # This is another validity metric which asks if the CPE URI helps us determine the version validity
         if cpe_match["vulnerable"]:
             cpe_uri = cpe_match["cpe23Uri"]
-            if is_app_in_cpe_uri(normalized_app, cpe_uri):
+            if is_app_in_cpe_uri(cpe_uri):
                 # This is a validity metric where we simply look for the application in the CPE URI as a string
                 logger.debug(f"[{cve_id}] - Application in CPE URI. +confidence")
                 confidences["app in cpe_uri"] = True
@@ -267,57 +294,83 @@ def find_all_cves(conn, application, versions, debug=False):
         except KeyError:
             logger.debug(f"[{cve_id}] - Did not do CPE version evaluation due to invulnerable CPE or application not in CPE URI. -confidence")
             confidences["app in cpe_uri"] = False
-                    
-        # Turn confidence dictionary into confidence score (out of 100)
-        confidence = ((list(confidences.values()).count(True))/len(list(confidences.values()))) * 100
-        logger.debug(f"Confidence for {cve_id}: {confidence} - {json.dumps(confidences)}")
-        # Threshold for returning True
-        if confidence >= 75:
-            return True
-        else:
-            return False
+        confidences["gai says yes"] = False
+        return confidences
 
-    # TODO - do bulk version of this
-    valid_cves = dict()
-    def gen_valid_cves(cves, versions):
+    def populate_candidate_cves(cves, versions):
         logger.info(f"Evaluating {application} with version(s) {', '.join(versions)}")
+        normalized_cves = dict()
+        candidate_cves = dict()
         for version in versions:
-            valid_cves[version] = dict()
+            candidate_cves[version] = dict()
         for cve in cves:
             nodes = cve["configurations"]["nodes"]
             logger.debug(f"------------ [{cve['cve']['CVE_data_meta']['ID']}] -------------")
             logger.debug(f"Description: {cve['cve']['description']['description_data'][0]['value']}")
+            normalized_cves[cve['cve']['CVE_data_meta']['ID']] = cve['cve']['description']['description_data'][0]['value']
             for version in versions:
                 logger.debug(f"Evaluating {application} CVEs for version {version}")
                 for node in nodes:
                     for child in node["children"]:
                         cpe_matches = child["cpe_match"]
                         for cpe_match in cpe_matches:
-                            if cve["cve"]["CVE_data_meta"]["ID"] not in valid_cves.keys():
+                            if cve["cve"]["CVE_data_meta"]["ID"] not in candidate_cves.keys():
                                 logger.debug(f"CPE: {cpe_match}")
-                                if is_valid_cve(application, version, cve["cve"]["CVE_data_meta"]["ID"], cve["cve"]["description"]["description_data"][0]["value"], cpe_match):
-                                    logger.info(f"Valid CVE for {application} {version}: {cve['cve']['CVE_data_meta']['ID']}")
-                                    valid_cves[version][cve["cve"]["CVE_data_meta"]["ID"]] = cve
-                                    break
-                                else:
-                                    logger.debug(f"Invalid CVE: {cve['cve']['CVE_data_meta']['ID']}")
-                        
+                                candidate_cves[version][cve["cve"]["CVE_data_meta"]["ID"]] = is_valid_cve(application, version, cve["cve"]["CVE_data_meta"]["ID"], cve["cve"]["description"]["description_data"][0]["value"], cpe_match)
                     cpe_matches = node["cpe_match"]
                     for cpe_match in cpe_matches:
-                        if cve["cve"]["CVE_data_meta"]["ID"] not in valid_cves.keys():
+                        if cve["cve"]["CVE_data_meta"]["ID"] not in candidate_cves.keys():
                             logger.debug(f"CPE: {cpe_match}")
-                            if is_valid_cve(application, version, cve["cve"]["CVE_data_meta"]["ID"], cve["cve"]["description"]["description_data"][0]["value"], cpe_match):
-                                logger.info(f"Valid CVE for {application} {version}: {cve['cve']['CVE_data_meta']['ID']}")
-                                valid_cves[version][cve["cve"]["CVE_data_meta"]["ID"]] = cve
-                                break
-                            else:
-                                logger.debug(f"Invalid CVE: {cve['cve']['CVE_data_meta']['ID']}")
+                            candidate_cves[version][cve["cve"]["CVE_data_meta"]["ID"]] = is_valid_cve(application, version, cve["cve"]["CVE_data_meta"]["ID"], cve["cve"]["description"]["description_data"][0]["value"], cpe_match)
 
+        for version in versions:
+            logger.info(f"Getting GAI answer for {application}, version {version}")
+            gai_ans = ask_gai(application, version, normalized_cves)
+            try:
+                gai_ans = literal_eval(gai_ans)
+                for a in gai_ans:
+                    candidate_cves[version][cve["cve"]["CVE_data_meta"]["ID"]]["gai says yes"] = True
+
+            except:
+                logger.error(f"Unable to cast GAI response: {gai_ans}, as anything that could be literal_eval'ed")
+        return candidate_cves
+
+    def get_valid_cves(candidate_cves_with_versions, cve_details):
+        WEIGHTS = {
+           "summary contains app name": 2,
+           "app in cpe_uri": 2,
+           "cpe_version_eval": 2,
+           "summary regex eval": 2,
+           "gai says yes": 5 
+        }
+        THRESHOLD = sum(WEIGHTS.values()) / 2
+        valid_cves = dict()
+        for version, candidate_cves in candidate_cves_with_versions.items():
+            valid_cves[version] = set()
+            for candidate_cve, confidences in candidate_cves.items():
+                score = 0
+                for confidence_name, confidence_value in confidences.items():
+                    score += WEIGHTS[confidence_name] * int(confidence_value)
+                if score >= THRESHOLD:
+                    valid_cves[version].add(candidate_cve) 
+        ans = dict()
+        for version, valid_cve_set in valid_cves.items():
+            ans[version] = dict()
+            for valid_cve in valid_cve_set: 
+                for cve_detail in cve_details:
+                    if cve_detail["cve"]["CVE_data_meta"]["ID"] == valid_cve:
+                        ans[version][valid_cve] = cve_detail
+        return ans
+
+    # TODO - do bulk version of this
+    valid_cves = dict()
     cve_count = coll.count_documents(query)
     logger.debug(f"MongoDB returned {cve_count} documents for the query")
     # Load the CVEs into a list so we don't have to use a cursor due to 10 minute timeouts
     cves = [_ for _ in coll.find(query)]
-    gen_valid_cves(cves, versions)
+    #cves = [_ for _ in coll.aggregate(query)]
+    candidate_cves_with_versions = populate_candidate_cves(cves, versions)
+    valid_cves = get_valid_cves(candidate_cves_with_versions, cves)
     return valid_cves
 
 if __name__ == "__main__":
